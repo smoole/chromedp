@@ -3,26 +3,80 @@ package chromedp
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/chromedp/cdproto/page"
 )
+
+type navOptions struct {
+	wait func(ctx context.Context, ev interface{}) error
+}
+
+type NavigateOption = func(*navOptions)
+
+func NavigateWaitFunc(wait func(ctx context.Context, ev interface{}) error) NavigateOption {
+	return func(opts *navOptions) {
+		opts.wait = wait
+	}
+}
+
+func NavigateNoWait(opts *navOptions) {
+	opts.wait = nil
+}
+
+func NavigateWaitEventLoadEventFired(opts *navOptions) {
+	opts.wait = func(ctx context.Context, ev interface{}) error {
+		if _, ok := ev.(*page.EventLoadEventFired); ok {
+			return nil
+		}
+		return ErrNotMatch
+	}
+}
+
+func NavigateWaitEventFrameNavigated(opts *navOptions) {
+	opts.wait = func(ctx context.Context, ev interface{}) error {
+		if _, ok := ev.(*page.EventFrameNavigated); ok {
+			return nil
+		}
+		return ErrNotMatch
+	}
+}
+
+func WaitNavigate(opts ...NavigateOption) NavigateAction {
+	return ActionFunc(func(ctx context.Context) error {
+		return waitNavEvent(ctx, opts...)
+	})
+}
 
 // NavigateAction are actions that manipulate the navigation of the browser.
 type NavigateAction Action
 
 // Navigate is an action that navigates the current frame.
-func Navigate(urlstr string) NavigateAction {
+func Navigate(urlstr string, opts ...NavigateOption) NavigateAction {
 	return ActionFunc(func(ctx context.Context) error {
 		_, _, _, err := page.Navigate(urlstr).Do(ctx)
 		if err != nil {
 			return err
 		}
-		return waitLoaded(ctx)
+		return waitNavEvent(ctx, opts...)
 	})
 }
 
 // waitLoaded blocks until a target receives a Page.loadEventFired.
-func waitLoaded(ctx context.Context) error {
+func waitNavEvent(ctx context.Context, opts ...NavigateOption) error {
+	options := &navOptions{}
+	// set default wait func
+	NavigateWaitEventLoadEventFired(options)
+	// override
+	for _, o := range opts {
+		o(options)
+	}
+
+	// If no wait, just return
+	if options.wait == nil {
+		return nil
+	}
+
 	// TODO: this function is inherently racy, as we don't run ListenTarget
 	// until after the navigate action is fired. For example, adding
 	// time.Sleep(time.Second) at the top of this body makes most tests hang
@@ -36,7 +90,7 @@ func waitLoaded(ctx context.Context) error {
 	ch := make(chan struct{})
 	lctx, cancel := context.WithCancel(ctx)
 	ListenTarget(lctx, func(ev interface{}) {
-		if _, ok := ev.(*page.EventLoadEventFired); ok {
+		if err := options.wait(ctx, ev); err == nil {
 			cancel()
 			close(ch)
 		}
@@ -65,18 +119,18 @@ func NavigationEntries(currentIndex *int64, entries *[]*page.NavigationEntry) Na
 
 // NavigateToHistoryEntry is an action to navigate to the specified navigation
 // entry.
-func NavigateToHistoryEntry(entryID int64) NavigateAction {
+func NavigateToHistoryEntry(entryID int64, opts ...NavigateOption) NavigateAction {
 	return ActionFunc(func(ctx context.Context) error {
 		if err := page.NavigateToHistoryEntry(entryID).Do(ctx); err != nil {
 			return err
 		}
-		return waitLoaded(ctx)
+		return waitNavEvent(ctx, opts...)
 	})
 }
 
 // NavigateBack is an action that navigates the current frame backwards in its
 // history.
-func NavigateBack() NavigateAction {
+func NavigateBack(opts ...NavigateOption) NavigateAction {
 	return ActionFunc(func(ctx context.Context) error {
 		cur, entries, err := page.GetNavigationHistory().Do(ctx)
 		if err != nil {
@@ -91,13 +145,13 @@ func NavigateBack() NavigateAction {
 		if err := page.NavigateToHistoryEntry(entryID).Do(ctx); err != nil {
 			return err
 		}
-		return waitLoaded(ctx)
+		return waitNavEvent(ctx, opts...)
 	})
 }
 
 // NavigateForward is an action that navigates the current frame forwards in
 // its history.
-func NavigateForward() NavigateAction {
+func NavigateForward(opts ...NavigateOption) NavigateAction {
 	return ActionFunc(func(ctx context.Context) error {
 		cur, entries, err := page.GetNavigationHistory().Do(ctx)
 		if err != nil {
@@ -112,17 +166,17 @@ func NavigateForward() NavigateAction {
 		if err := page.NavigateToHistoryEntry(entryID).Do(ctx); err != nil {
 			return err
 		}
-		return waitLoaded(ctx)
+		return waitNavEvent(ctx, opts...)
 	})
 }
 
 // Reload is an action that reloads the current page.
-func Reload() NavigateAction {
+func Reload(opts ...NavigateOption) NavigateAction {
 	return ActionFunc(func(ctx context.Context) error {
 		if err := page.Reload().Do(ctx); err != nil {
 			return err
 		}
-		return waitLoaded(ctx)
+		return waitNavEvent(ctx, opts...)
 	})
 }
 
@@ -164,4 +218,36 @@ func Title(title *string) Action {
 		panic("title cannot be nil")
 	}
 	return EvaluateAsDevTools(`document.title`, title)
+}
+
+func WaitNotLocation(not string, ret *string) Action {
+	return ActionFunc(func(ctx context.Context) error {
+		urlstr := ""
+		for {
+			tm := time.NewTimer(50 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				tm.Stop()
+				return ctx.Err()
+			case <-tm.C:
+			}
+
+			Location(&urlstr).Do(ctx)
+			if urlstr != not {
+				if ret != nil {
+					*ret = urlstr
+				}
+				return nil
+			}
+		}
+	})
+}
+
+func WaitLocationChanged(ret *string) Action {
+	return ActionFunc(func(ctx context.Context) error {
+		init := ""
+		Location(&init).Do(ctx)
+
+		return WaitNotLocation(init, ret).Do(ctx)
+	})
 }

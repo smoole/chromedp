@@ -34,6 +34,9 @@ const (
 	// ErrNotSelected is the not selected error.
 	ErrNotSelected Error = "not selected"
 
+	// ErrNotMatch is the not match error.
+	ErrNotMatch Error = "not match"
+
 	// ErrInvalidBoxModel is the invalid box model error.
 	ErrInvalidBoxModel Error = "invalid box model"
 

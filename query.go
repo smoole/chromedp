@@ -34,6 +34,9 @@ type Selector struct {
 	wait  func(context.Context, *cdp.Frame, ...cdp.NodeID) ([]*cdp.Node, error)
 	after func(context.Context, ...*cdp.Node) error
 	raw   bool
+
+	checking    bool
+	checkResult *bool
 }
 
 // Query is a query action that queries the browser for specific element
@@ -158,10 +161,12 @@ func (s *Selector) Do(ctx context.Context) error {
 		return ErrInvalidTarget
 	}
 	for {
+		tm := time.NewTimer(50 * time.Millisecond)
 		select {
 		case <-ctx.Done():
+			tm.Stop()
 			return ctx.Err()
-		case <-time.After(5 * time.Millisecond):
+		case <-tm.C:
 		}
 		t.curMu.RLock()
 		cur := t.cur
@@ -183,13 +188,27 @@ func (s *Selector) Do(ctx context.Context) error {
 
 		ids, err := s.by(ctx, root)
 		if err != nil || len(ids) < s.exp {
+			if s.checking {
+				*(s.checkResult) = false
+				return nil
+			}
+
 			continue
 		}
 		nodes, err := s.wait(ctx, cur, ids...)
 		// if nodes==nil, we're not yet ready
 		if nodes == nil || err != nil {
+			if s.checking && err != nil {
+				*(s.checkResult) = false
+				return nil
+			}
+
 			continue
 		}
+		if s.checking {
+			*(s.checkResult) = true
+		}
+
 		if s.after != nil {
 			if err := s.after(ctx, nodes...); err != nil {
 				return err
@@ -1179,4 +1198,72 @@ func ScrollIntoView(sel interface{}, opts ...QueryOption) QueryAction {
 
 		return nil
 	}, opts...)
+}
+
+func EvaluateClick(sel interface{}, opts ...QueryOption) QueryAction {
+	return QueryAfter(sel, func(ctx context.Context, nodes ...*cdp.Node) error {
+		if len(nodes) < 1 {
+			return fmt.Errorf("selector %q did not return any nodes", sel)
+		}
+
+		var res bool
+		err := EvaluateAsDevTools(snippet(clickJS, cashX(true), sel, nodes[0]), &res).Do(ctx)
+		if err != nil {
+			return err
+		}
+
+		if !res {
+			return fmt.Errorf("could not call submit on node %d", nodes[0].NodeID)
+		}
+
+		return nil
+	}, opts...)
+}
+
+func check(sel interface{}, ret *bool, opts ...QueryOption) QueryAction {
+	s := &Selector{
+		sel:         sel,
+		exp:         1,
+		checking:    true,
+		checkResult: ret,
+	}
+
+	// apply options
+	for _, o := range opts {
+		o(s)
+	}
+
+	if s.by == nil {
+		BySearch(s)
+	}
+
+	if s.wait == nil {
+		NodeReady(s)
+	}
+
+	return s
+}
+
+func CheckReady(sel interface{}, ret *bool, opts ...QueryOption) QueryAction {
+	return check(sel, ret, opts...)
+}
+
+func CheckVisible(sel interface{}, ret *bool, opts ...QueryOption) QueryAction {
+	return check(sel, ret, append(opts, NodeVisible)...)
+}
+
+func CheckNotVisible(sel interface{}, ret *bool, opts ...QueryOption) QueryAction {
+	return check(sel, ret, append(opts, NodeNotVisible)...)
+}
+
+func CheckEnabled(sel interface{}, ret *bool, opts ...QueryOption) QueryAction {
+	return check(sel, ret, append(opts, NodeEnabled)...)
+}
+
+func CheckSelected(sel interface{}, ret *bool, opts ...QueryOption) QueryAction {
+	return check(sel, ret, append(opts, NodeSelected)...)
+}
+
+func CheckNotPresent(sel interface{}, ret *bool, opts ...QueryOption) QueryAction {
+	return check(sel, ret, append(opts, NodeNotPresent)...)
 }

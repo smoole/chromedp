@@ -87,6 +87,11 @@ const (
 	visibleJS = `(function(a) {
 		return Boolean( a.offsetWidth || a.offsetHeight || a.getClientRects().length );
 	})(%s)`
+
+	clickJS = `(function(a) {
+		a.click();
+		return true;
+	})(%s)`
 )
 
 // snippet builds a Javascript expression snippet.
