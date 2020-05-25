@@ -87,17 +87,20 @@ func waitNavEvent(ctx context.Context, opts ...NavigateOption) error {
 	//
 	// For now, the second race seems much more common in real scenarios, so
 	// keep the first approach. Is there a better way to deal with this?
-	ch := make(chan struct{})
+	ch := make(chan error, 1)
 	lctx, cancel := context.WithCancel(ctx)
 	ListenTarget(lctx, func(ev interface{}) {
-		if err := options.wait(ctx, ev); err == nil {
-			cancel()
-			close(ch)
+		err := options.wait(ctx, ev)
+		if err == ErrNotMatch {
+			return
 		}
+		ch <- err
+		cancel()
+		close(ch)
 	})
 	select {
-	case <-ch:
-		return nil
+	case err := <-ch:
+		return err
 	case <-ctx.Done():
 		return ctx.Err()
 	}
