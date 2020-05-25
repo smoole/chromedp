@@ -2,8 +2,34 @@ package chromedp
 
 import (
 	"context"
+	"errors"
 	"sync"
+	"time"
 )
+
+var (
+	ErrContinueWait = errors.New("ErrContinueWait")
+)
+
+func WaitUntil(f func(ctx context.Context) error) Action {
+	return ActionFunc(func(ctx context.Context) error {
+		for {
+			tm := time.NewTimer(50 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				tm.Stop()
+				return ctx.Err()
+			case <-tm.C:
+			}
+
+			err := f(ctx)
+			if err == ErrContinueWait {
+				continue
+			}
+			return err
+		}
+	})
+}
 
 func WaitOneOf(waitIdx *int, actions ...Action) Action {
 	if len(actions) == 0 {
