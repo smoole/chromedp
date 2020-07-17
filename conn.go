@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"time"
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
@@ -83,7 +84,7 @@ func (c *Conn) Close() error {
 }
 
 // Read reads the next message.
-func (c *Conn) Read(_ context.Context, msg *cdproto.Message) error {
+func (c *Conn) Read(ctx context.Context, msg *cdproto.Message) error {
 	// get websocket reader
 	c.reader = wsutil.Reader{Source: c.conn, State: ws.StateClientSide}
 	h, err := c.reader.NextFrame()
@@ -101,6 +102,16 @@ func (c *Conn) Read(_ context.Context, msg *cdproto.Message) error {
 	buf := b.Bytes()
 	if c.dbgf != nil {
 		c.dbgf("<- %s", buf)
+	}
+
+	// IMPORTANT: for windows.. a bug.. performSearch no resp..
+	// delay can be ok.. maybe gosched also is ok
+	t := time.NewTimer(1 * time.Millisecond)
+	select {
+	case <-ctx.Done():
+		t.Stop()
+		return ctx.Err()
+	case <-t.C:
 	}
 
 	// unmarshal, reusing lexer
