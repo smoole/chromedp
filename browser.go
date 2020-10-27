@@ -201,6 +201,11 @@ func (b *Browser) execute(ctx context.Context, method string, params easyjson.Ma
 	return nil
 }
 
+type delTabMessage struct {
+	m         *cdproto.Message
+	sessionID target.SessionID
+}
+
 func (b *Browser) run(ctx context.Context) {
 	defer b.conn.Close()
 
@@ -208,7 +213,7 @@ func (b *Browser) run(ctx context.Context) {
 	// their session ID.
 	incomingQueue := make(chan *cdproto.Message, 1)
 
-	delTabQueue := make(chan target.SessionID, 1)
+	delTabQueue := make(chan *delTabMessage, 1)
 
 	// This goroutine continuously reads events from the websocket
 	// connection. The separate goroutine is needed since a websocket read
@@ -243,7 +248,10 @@ func (b *Browser) run(ctx context.Context) {
 				b.listenersMu.Unlock()
 
 				if ev, ok := ev.(*target.EventDetachedFromTarget); ok {
-					delTabQueue <- ev.SessionID
+					delTabQueue <- &delTabMessage{
+						sessionID: ev.SessionID,
+						m:         msg,
+					}
 				}
 
 			case msg.ID != 0:
@@ -275,11 +283,18 @@ func (b *Browser) run(ctx context.Context) {
 			}
 			b.pages[t.SessionID] = t
 
-		case sessionID := <-delTabQueue:
-			if _, ok := b.pages[sessionID]; !ok {
-				b.errf("executor for %q doesn't exist", sessionID)
+		case delTabMsg := <-delTabQueue:
+			page, ok := b.pages[delTabMsg.sessionID]
+			if !ok {
+				b.errf("executor for %q doesn't exist", delTabMsg.sessionID)
+			} else {
+				delete(b.pages, delTabMsg.sessionID)
+				select {
+				case <-ctx.Done():
+					return
+				case page.messageQueue <- delTabMsg.m:
+				}
 			}
-			delete(b.pages, sessionID)
 
 		case m := <-incomingQueue:
 			page, ok := b.pages[m.SessionID]

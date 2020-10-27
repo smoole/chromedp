@@ -31,8 +31,12 @@ func WaitUntil(f func(ctx context.Context) error) Action {
 	})
 }
 
-func IntervalRun(interval time.Duration, action Action) Action {
+func IntervalDo(interval time.Duration, action Action) Action {
 	return ActionFunc(func(ctx context.Context) error {
+		if err := action.Do(ctx); err != nil {
+			return err
+		}
+
 		tm := time.NewTimer(interval)
 		for {
 			select {

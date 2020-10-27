@@ -532,3 +532,26 @@ func WaitNewTarget(ctx context.Context, fn func(*target.Info) bool) <-chan targe
 	})
 	return ch
 }
+
+func WaitDetachedFromTarget(ctx context.Context, fn func(target.SessionID) bool) <-chan target.SessionID {
+	ch := make(chan target.SessionID, 1)
+	lctx, cancel := context.WithCancel(ctx)
+	ListenTarget(lctx, func(ev interface{}) {
+		var id target.SessionID
+		switch ev := ev.(type) {
+		case *target.EventDetachedFromTarget:
+			id = ev.SessionID
+		default:
+			return
+		}
+		if fn(id) {
+			select {
+			case <-lctx.Done():
+			case ch <- id:
+			}
+			close(ch)
+			cancel()
+		}
+	})
+	return ch
+}
