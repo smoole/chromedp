@@ -31,6 +31,24 @@ func WaitUntil(f func(ctx context.Context) error) Action {
 	})
 }
 
+func IntervalRun(interval time.Duration, action Action) Action {
+	return ActionFunc(func(ctx context.Context) error {
+		tm := time.NewTimer(interval)
+		for {
+			select {
+			case <-ctx.Done():
+				tm.Stop()
+				return ctx.Err()
+			case <-tm.C:
+				if err := action.Do(ctx); err != nil {
+					return err
+				}
+				tm = time.NewTimer(interval)
+			}
+		}
+	})
+}
+
 func WaitOneOf(waitIdx *int, actions ...Action) Action {
 	if len(actions) == 0 {
 		panic("actions cannot be empty")
