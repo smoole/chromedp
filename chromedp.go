@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"errors"
+
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/css"
@@ -533,25 +535,52 @@ func WaitNewTarget(ctx context.Context, fn func(*target.Info) bool) <-chan targe
 	return ch
 }
 
-func WaitDetachedFromTarget(ctx context.Context, fn func(target.SessionID) bool) <-chan target.SessionID {
-	ch := make(chan target.SessionID, 1)
+func WaitEvent(ctx context.Context, fn func(ev interface{}) (interface{}, bool)) <-chan interface{} {
+	ch := make(chan interface{}, 1)
 	lctx, cancel := context.WithCancel(ctx)
 	ListenTarget(lctx, func(ev interface{}) {
-		var id target.SessionID
-		switch ev := ev.(type) {
-		case *target.EventDetachedFromTarget:
-			id = ev.SessionID
-		default:
-			return
-		}
-		if fn(id) {
+		if v, ok := fn(ev); ok {
 			select {
 			case <-lctx.Done():
-			case ch <- id:
+			case ch <- v:
 			}
 			close(ch)
 			cancel()
 		}
 	})
 	return ch
+}
+
+func WaitSessionIDDetached(id target.SessionID) Action {
+	return ActionFunc(func(ctx context.Context) error {
+		cctx, ccancel := context.WithCancel(ctx)
+		defer ccancel()
+
+		ch := WaitEvent(cctx, func(ev interface{}) (interface{}, bool) {
+			v, ok := ev.(*target.EventDetachedFromTarget)
+			if ok && v.SessionID == id {
+				return v.SessionID, true
+			}
+			return nil, false
+		})
+
+		select {
+		case <-cctx.Done():
+			return cctx.Err()
+		case <-ch:
+		}
+
+		return nil
+	})
+}
+
+func WaitSessionDetached() Action {
+	return ActionFunc(func(ctx context.Context) error {
+		c := FromContext(ctx)
+		if c.Target == nil {
+			return errors.New("No target for WaitSessionDetached")
+		}
+
+		return WaitSessionIDDetached(c.Target.SessionID).Do(ctx)
+	})
 }
